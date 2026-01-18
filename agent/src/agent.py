@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -20,60 +22,50 @@ logger = logging.getLogger("auteur-agent")
 load_dotenv(".env.local")
 
 
-# Cinematic direction prompts based on mode
-DISCOVERY_INSTRUCTIONS = """You are Auteur, an expert cinematographer and creative mentor acting as a real-time co-director.
-You are in DISCOVERY MODE - scanning for narrative moments in documentary/street photography scenarios.
+@dataclass
+class VisualContext:
+    """Stores the latest vision data for context injection."""
 
-When you receive scene analysis data, provide brief, actionable voice direction focusing on:
-- Dynamic subjects and decisive moments ("The cyclist entering frame creates motion - capture now!")
-- Leading lines and composition opportunities ("The shadows form perfect leading lines to your left")
-- Color contrasts and visual tension ("Red umbrella against grey wall - high contrast focal point")
-- Narrative potential ("Two subjects about to interact - anticipate the moment")
-
-Your responses must be:
-- Extremely concise (under 15 words ideal)
-- Physically actionable ("Pan left", "Wait for the gesture", "Frame tighter")
-- Urgent when moments are fleeting
-- Encouraging and mentor-like
-
-Speak naturally as a director whispering guidance. Never say "I see" or "The analysis shows" - just direct."""
-
-PRECISION_INSTRUCTIONS = """You are Auteur, an expert cinematographer acting as a technical auditor for studio work.
-You are in PRECISION MODE - analyzing technical aspects for portraits and controlled environments.
-
-When you receive scene analysis data, provide brief, technical voice direction focusing on:
-- Lighting ratios and quality ("Key light too harsh - soften or move subject back 2 feet")
-- Rule of thirds and golden ratio ("Subject's eyes should hit upper third intersection")
-- Depth of field considerations ("Increase separation from background")
-- Color temperature and exposure ("Warm side fill needed to balance cool key")
-
-Your responses must be:
-- Technically precise but brief
-- Actionable adjustments with specific measurements when possible
-- Reference classic techniques ("Rembrandt lighting", "butterfly pattern")
-- Professional and mentor-like
-
-Speak as a master cinematographer giving technical notes. Be direct and specific."""
+    mode: str = "geometry"
+    analysis: str = ""
+    score: int = 0
+    overlays: list = field(default_factory=list)
+    timestamp: int = 0
 
 
-class AuteurDirector(Agent):
-    def __init__(self, mode: str = "discovery") -> None:
-        instructions = DISCOVERY_INSTRUCTIONS if mode == "discovery" else PRECISION_INSTRUCTIONS
+# Terse system instructions - no proactive behavior
+TERSE_INSTRUCTIONS = """You are a terse professional cinematographer.
+
+RULES:
+- Keep answers under 2 sentences.
+- Focus on physical adjustments: pan left, tilt down, step back, zoom in.
+- Never explain theory unless explicitly asked.
+- Be direct. No filler words.
+
+When visual context is provided, use it to give specific, actionable feedback.
+If no visual context is available, say you're still observing."""
+
+
+def build_instructions_with_context(ctx: VisualContext) -> str:
+    """Build complete instructions with visual context."""
+    if not ctx.analysis:
+        return f"""{TERSE_INSTRUCTIONS}
+
+[Visual Context: Still observing - no data yet]"""
+
+    return f"""{TERSE_INSTRUCTIONS}
+
+[Visual Context - {ctx.mode.upper()} Lens, Score: {ctx.score}/10]:
+{ctx.analysis}"""
+
+
+class SilentObserverAgent(Agent):
+    """Agent that buffers vision data and responds ONLY when user speaks."""
+
+    def __init__(self, visual_context: VisualContext) -> None:
+        instructions = build_instructions_with_context(visual_context)
         super().__init__(instructions=instructions)
-        self.mode = mode
-        self.last_analysis = None
-
-    async def on_scene_analysis(self, analysis: dict, mode: str):
-        """Process scene analysis and generate direction."""
-        self.last_analysis = analysis
-
-        # Update mode if changed
-        if mode != self.mode:
-            self.mode = mode
-            self.instructions = DISCOVERY_INSTRUCTIONS if mode == "discovery" else PRECISION_INSTRUCTIONS
-
-        # The analysis will be processed naturally through conversation
-        # The agent will speak based on the scene data
+        self.visual_context = visual_context
 
 
 server = AgentServer()
@@ -92,8 +84,11 @@ async def auteur_session(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Create the director agent
-    director = AuteurDirector(mode="discovery")
+    # Shared visual context buffer
+    visual_context = VisualContext()
+
+    # Create the silent observer agent
+    agent = SilentObserverAgent(visual_context)
 
     # Set up voice AI pipeline
     session = AgentSession(
@@ -101,61 +96,73 @@ async def auteur_session(ctx: JobContext):
         llm=inference.LLM(model="openai/gpt-4o-mini"),
         tts=inference.TTS(
             model="cartesia/sonic-3",
-            voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"  # Professional male voice
+            voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
+        allow_interruptions=True,
     )
 
-    # Handle incoming scene analysis data from frontend
-    @ctx.room.on("data_received")
-    async def on_data_received(data: bytes, participant: rtc.RemoteParticipant, kind: rtc.DataPacketKind, topic: str | None):
+    # Async handler for vision data - must be wrapped for sync .on()
+    async def handle_vision_update(message: dict):
+        vision_data = message.get("data", {})
+
+        # Update the visual context buffer SILENTLY
+        visual_context.mode = message.get("mode", "geometry")
+        visual_context.analysis = vision_data.get("analysis", "")
+        visual_context.score = vision_data.get("score", 0)
+        visual_context.overlays = vision_data.get("overlays", [])
+        visual_context.timestamp = message.get("timestamp", 0)
+
+        logger.info(
+            f"Visual context updated (mode={visual_context.mode}, score={visual_context.score})"
+        )
+
+        # Update agent with new context
+        new_agent = SilentObserverAgent(visual_context)
+        session.update_agent(new_agent)
+
+    # Sync wrapper for data_received - uses create_task for async work
+    def on_data_received(
+        data: bytes,
+        participant: rtc.RemoteParticipant,
+        kind: rtc.DataPacketKind,
+        topic: str | None,
+    ):
         try:
             message = json.loads(data.decode("utf-8"))
-            if message.get("type") == "scene_analysis":
-                mode = message.get("mode", "discovery")
-                analysis = message.get("analysis", {})
-
-                logger.info(f"Received scene analysis in {mode} mode")
-
-                # Build context for the LLM
-                context_prompt = f"""
-                Scene Analysis Update:
-                - Description: {analysis.get('description', 'N/A')}
-                - Lighting: {analysis.get('lighting', 'N/A')}
-                - Mood: {analysis.get('mood', 'N/A')}
-                - Focal Points: {', '.join(analysis.get('focal_points', []))}
-                - Composition Tips: {', '.join(analysis.get('composition_tips', []))}
-                - Cinematic Score: {analysis.get('cinematic_score', 'N/A')}/100
-
-                Based on this analysis, provide a brief directing note to the cinematographer."""
-
-                # Send to agent for processing - the agent will speak the response
-                await session.say(context_prompt, allow_interruptions=True)
-
+            if message.get("type") == "vision_update":
+                asyncio.create_task(handle_vision_update(message))
         except json.JSONDecodeError:
             logger.warning("Received non-JSON data")
         except Exception as e:
             logger.error(f"Error processing data: {e}")
 
+    # Async handler for participant greeting
+    async def greet_participant():
+        await session.say(
+            "Auteur ready. Ask me anything about your shot.",
+            allow_interruptions=True,
+        )
+
+    # Sync wrapper for participant_connected
+    def on_participant_connected(participant: rtc.RemoteParticipant):
+        if participant.identity.startswith("user-"):
+            asyncio.create_task(greet_participant())
+
+    # Register event handlers (sync wrappers)
+    ctx.room.on("data_received", on_data_received)
+    ctx.room.on("participant_connected", on_participant_connected)
+
     # Start session
     await session.start(
-        agent=director,
+        agent=agent,
         room=ctx.room,
     )
 
     # Connect to room
     await ctx.connect()
-
-    # Initial greeting when user joins
-    @ctx.room.on("participant_connected")
-    async def on_participant_connected(participant: rtc.RemoteParticipant):
-        if participant.identity.startswith("user-"):
-            await session.say(
-                "Auteur online. Point your camera at something interesting and I'll guide you.",
-                allow_interruptions=True
-            )
 
 
 if __name__ == "__main__":
