@@ -8,30 +8,18 @@ interface LensSelectorProps {
   disabled?: boolean;
 }
 
-const LENS_CONFIG: Record<
-  LensMode,
-  { label: string; icon: string; color: string; activeColor: string }
-> = {
+const LENS_CONFIG: Record<LensMode, { label: string; icon: string }> = {
   geometry: {
-    label: "Geometry",
-    icon: "△",
-    color: "text-cyan-400/60",
-    activeColor:
-      "bg-gradient-to-r from-cyan-500 to-blue-500 text-white shadow-lg shadow-cyan-500/25",
+    label: "GEOMETRY",
+    icon: "⌗",
   },
   light: {
-    label: "Light",
-    icon: "☀",
-    color: "text-amber-400/60",
-    activeColor:
-      "bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg shadow-amber-500/25",
+    label: "LIGHT",
+    icon: "☼",
   },
   story: {
-    label: "Story",
-    icon: "♥",
-    color: "text-rose-400/60",
-    activeColor:
-      "bg-gradient-to-r from-rose-500 to-pink-500 text-white shadow-lg shadow-rose-500/25",
+    label: "STORY",
+    icon: "◈", // Diamond or cinema rect
   },
 };
 
@@ -41,7 +29,7 @@ export function LensSelector({
   disabled = false,
 }: LensSelectorProps) {
   return (
-    <div className="inline-flex items-center gap-1 bg-black/40 backdrop-blur-xl rounded-full p-1 border border-white/10">
+    <div className="inline-flex items-center p-1 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl">
       {(Object.keys(LENS_CONFIG) as LensMode[]).map((lens) => {
         const config = LENS_CONFIG[lens];
         const isActive = currentLens === lens;
@@ -52,19 +40,21 @@ export function LensSelector({
             onClick={() => !disabled && onLensChange(lens)}
             disabled={disabled}
             className={`
-              relative px-4 py-2 rounded-full text-sm font-medium transition-all duration-200
+              relative px-5 py-2 rounded-full transition-all duration-300 ease-out group
               flex items-center gap-2
-              ${
-                isActive
-                  ? config.activeColor
-                  : `${config.color} hover:text-white/80 hover:bg-white/5`
+              ${isActive
+                ? "bg-white text-black shadow-lg shadow-white/10"
+                : "text-white/40 hover:text-white hover:bg-white/5"
               }
-              ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+              ${disabled ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}
             `}
-            title={`${config.label} Lens`}
           >
-            <span className="text-base">{config.icon}</span>
-            <span className="hidden sm:inline">{config.label}</span>
+            <span className={`text-[10px] ${isActive ? "font-bold" : "font-medium"}`}>
+              {config.icon}
+            </span>
+            <span className="font-mono text-[10px] tracking-[0.2em] uppercase">
+              {config.label}
+            </span>
           </button>
         );
       })}

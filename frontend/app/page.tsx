@@ -8,8 +8,9 @@ import {
   type LensMode,
   type VisionInsight,
 } from "../hooks/useAuteurVision";
-import { FloatingLensSelector } from "../components/LensSelector";
+import { FloatingLensSelector } from "../components/ModeSelector";
 import { DirectorOverlay } from "../components/DirectorOverlay";
+import { DirectorView } from "../components/DirectorView";
 
 // Vision status badge component
 function VisionStatusBadge({ status }: { status: VisionStatus }) {
@@ -67,7 +68,7 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 // Terminal log for VLM insights
-function InsightTerminal({ insights }: { insights: VisionInsight[] }) {
+function InsightTerminalLog({ insights }: { insights: VisionInsight[] }) {
   const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -79,7 +80,7 @@ function InsightTerminal({ insights }: { insights: VisionInsight[] }) {
   const lensColors: Record<LensMode, string> = {
     geometry: "text-cyan-400",
     light: "text-amber-400",
-    story: "text-rose-400",
+    story: "text-violet-400",
   };
 
   return (
@@ -132,6 +133,9 @@ export default function Home() {
 
   // Session control
   const [sessionActive, setSessionActive] = useState(false);
+
+  // View mode toggle
+  const [isFullscreenMode, setIsFullscreenMode] = useState(false);
 
   // Container dimensions for overlay
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -254,6 +258,24 @@ export default function Home() {
 
   const error = connectionError || visionError;
 
+  // Render fullscreen DirectorView mode
+  if (isFullscreenMode && isStreaming) {
+    return (
+      <>
+        <audio ref={audioRef} autoPlay />
+        <DirectorView
+          videoRef={videoRef}
+          mediaStream={mediaStream}
+          lens={lens}
+          isConnected={isConnected}
+          latestInsight={latestInsight}
+          onLensChange={changeLens}
+          onExitFullscreen={() => setIsFullscreenMode(false)}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white font-sans">
       <audio ref={audioRef} autoPlay />
@@ -272,6 +294,34 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-4">
+            {/* Fullscreen Toggle Button */}
+            {isStreaming && (
+              <button
+                onClick={() => setIsFullscreenMode(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 
+                         text-white/60 hover:text-white hover:bg-white/10 transition-all text-xs font-medium"
+                title="Enter Auteur Glass (Fullscreen HUD)"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                  <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                  <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                </svg>
+                <span>Auteur Glass</span>
+              </button>
+            )}
+
             <div className="flex items-center gap-2">
               <div
                 className={`w-2 h-2 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`}
@@ -396,7 +446,7 @@ export default function Home() {
                   Vision Log
                 </h3>
               </div>
-              <InsightTerminal insights={insightLog} />
+              <InsightTerminalLog insights={insightLog} />
             </div>
 
             {/* Error */}
@@ -416,7 +466,7 @@ export default function Home() {
                   ? "bg-cyan-500/5 border-cyan-500/20"
                   : lens === "light"
                     ? "bg-amber-500/5 border-amber-500/20"
-                    : "bg-rose-500/5 border-rose-500/20"
+                    : "bg-violet-500/5 border-violet-500/20"
               }`}
             >
               <h3
@@ -425,12 +475,12 @@ export default function Home() {
                     ? "text-cyan-400"
                     : lens === "light"
                       ? "text-amber-400"
-                      : "text-rose-400"
+                      : "text-violet-400"
                 }`}
               >
                 {lens === "geometry" && "△ Geometry"}
                 {lens === "light" && "☀ Light"}
-                {lens === "story" && "♥ Story"}
+                {lens === "story" && "◇ Story"}
               </h3>
               <p className="text-sm text-white/60 leading-relaxed">
                 {lens === "geometry" &&
