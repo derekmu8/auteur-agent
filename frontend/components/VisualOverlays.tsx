@@ -1,8 +1,12 @@
 "use client";
 
-import { type LensMode } from "../hooks/useAuteurVision";
+import { type LensMode, type VisionOverlay } from "../hooks/useAuteurVision";
+import { StoryOverlay } from "./StoryOverlay";
+
 interface VisualOverlaysProps {
   lens: LensMode;
+  overlays?: VisionOverlay[];
+  showOverlays?: boolean;
   containerWidth: number;
   containerHeight: number;
 }
@@ -110,6 +114,8 @@ function CinematicLetterbox({ containerHeight }: { containerHeight: number }) {
 
 export function VisualOverlays({
   lens,
+  overlays = [],
+  showOverlays = false,
   containerWidth,
   containerHeight,
 }: VisualOverlaysProps) {
@@ -142,6 +148,17 @@ export function VisualOverlays({
       {lens === "story" && (
         <>
           <CinematicLetterbox containerHeight={containerHeight} />
+          {/* Story subject overlays - only shown when user asks */}
+          {showOverlays && (
+            <StoryOverlay
+              overlays={overlays}
+              containerWidth={containerWidth}
+              containerHeight={containerHeight}
+            />
+          )}
+          <div className="absolute top-4 left-4 font-mono text-[9px] text-white/30 tracking-[0.2em] z-20">
+            {showOverlays ? "[STORY_ACTIVE]" : "[STORY_MODE]"}
+          </div>
         </>
       )}
     </div>

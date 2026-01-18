@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, MutableRefObject } from "react";
 import { RealtimeVision, StreamInferenceResult } from "@overshoot/sdk";
 import { Room } from "livekit-client";
 
@@ -12,9 +12,13 @@ export type VisionStatus = "fresh" | "stale" | "idle";
 
 // Overlay types for visual rendering
 export interface VisionOverlay {
-  type: "rule_of_thirds" | "subject_highlight" | "focus_point" | "direction" | "leading_line";
+  type: "rule_of_thirds" | "subject_highlight" | "focus_point" | "direction" | "leading_line" | "story_subject";
   status?: "match" | "mismatch" | "left" | "right" | "up" | "down";
   coordinates?: [number, number, number, number]; // [x, y, w, h] normalized 0-1
+  // Story mode specific fields
+  label?: string; // Name/description of the story subject
+  connection?: number; // Index of another story_subject this connects to (for drawing lines)
+  narrative_role?: "primary" | "secondary" | "context"; // Role in the visual story
 }
 
 // Structured vision data from VLM
@@ -31,10 +35,11 @@ export interface VisionInsight {
   timestamp: number;
 }
 
-// Hook configuration
+// Hook configuration - now accepts a ref to get current room
 interface UseAuteurVisionConfig {
-  room: Room | null;
+  roomRef: MutableRefObject<Room | null>;
   enabled: boolean;
+  isConnected: boolean;
 }
 
 // Lens-specific prompts - requesting JSON output with overlays
@@ -67,17 +72,20 @@ Rules:
 
 Return ONLY the JSON object, no other text.`,
 
-  story: `Analyze emotion and narrative. Return ONLY valid JSON:
+  story: `Find 2-4 interesting, related but non-obvious subjects that together tell a visual story. Look for unexpected connections, contrasts, or thematic links. Return ONLY valid JSON:
 
-{"analysis":"One sentence on mood/story","score":8,"overlays":[{"type":"subject_highlight","coordinates":[0.5,0.4,0.2,0.3]},{"type":"focus_point","coordinates":[0.6,0.5,0,0]}]}
+{"analysis":"One sentence describing the narrative connection between subjects","score":8,"overlays":[{"type":"story_subject","coordinates":[0.1,0.2,0.15,0.2],"label":"weathered bench","narrative_role":"primary","connection":1},{"type":"story_subject","coordinates":[0.6,0.3,0.12,0.18],"label":"young couple","narrative_role":"secondary","connection":0},{"type":"story_subject","coordinates":[0.8,0.1,0.1,0.1],"label":"setting sun","narrative_role":"context"}]}
 
 Rules:
-- analysis: Mood, emotion, or story observation
-- score: 1-10 rating
-- overlays array should include:
-  - subject_highlight for emotional subject [x,y,width,height] as 0-1 decimals
-  - focus_point at emotional focal point [x,y,0,0] (only x,y matter)
-- coordinates: values 0.0-1.0
+- analysis: Describe the non-obvious story connecting these subjects (e.g., "The abandoned umbrella and the clearing sky suggest a story of perseverance")
+- score: 1-10 how compelling the visual narrative is
+- overlays: Array of 2-4 story_subject items
+  - coordinates: [x, y, width, height] as 0-1 decimals
+  - label: Short 1-3 word description of the subject
+  - narrative_role: "primary" (main story element), "secondary" (supporting), or "context" (environmental)
+  - connection: Index of another subject this relates to (optional, for drawing connection lines)
+- Look for: contrasts, juxtapositions, cause-effect, before-after, scale differences, thematic echoes
+- Prioritize non-obvious, thought-provoking connections over literal relationships
 
 Return ONLY the JSON object, no other text.`,
 };
@@ -118,6 +126,16 @@ function parseVisionResponse(raw: string): VisionData | null {
               Math.max(0, Math.min(1, o.coordinates[3] || 0)),
             ];
           }
+          // Story mode specific fields
+          if (o.label && typeof o.label === "string") {
+            overlay.label = o.label.slice(0, 50); // Limit label length
+          }
+          if (typeof o.connection === "number" && o.connection >= 0) {
+            overlay.connection = o.connection;
+          }
+          if (o.narrative_role && ["primary", "secondary", "context"].includes(o.narrative_role)) {
+            overlay.narrative_role = o.narrative_role;
+          }
           overlays.push(overlay);
         }
       }
@@ -152,7 +170,9 @@ function calculateSimilarity(a: string, b: string): number {
   return intersection / union;
 }
 
-export function useAuteurVision({ room, enabled }: UseAuteurVisionConfig) {
+export function useAuteurVision({ roomRef, enabled, isConnected }: UseAuteurVisionConfig) {
+  console.log("[useAuteurVision] Hook called, enabled:", enabled, "isConnected:", isConnected);
+
   // State
   const [lens, setLens] = useState<LensMode>("geometry");
   const [visionStatus, setVisionStatus] = useState<VisionStatus>("idle");
@@ -167,41 +187,85 @@ export function useAuteurVision({ room, enabled }: UseAuteurVisionConfig) {
   const lastAnalysisRef = useRef<string>("");
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentLensRef = useRef<LensMode>(lens);
+  const pendingInsightRef = useRef<VisionInsight | null>(null);
+  const isConnectedRef = useRef(isConnected);
 
-  // Keep lens ref updated
+  // Keep refs updated
   useEffect(() => {
     currentLensRef.current = lens;
   }, [lens]);
 
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
+
   // Send vision update to agent via LiveKit data packet
+  // Uses roomRef.current to always get the latest room
   const sendVisionUpdate = useCallback(
-    (insight: VisionInsight) => {
-      if (!room?.localParticipant) return;
+    (insight: VisionInsight, forceNow = false) => {
+      const room = roomRef.current;
 
-      const data = new TextEncoder().encode(
-        JSON.stringify({
-          type: "vision_update",
-          mode: insight.lens,
-          data: insight.data,
-          timestamp: insight.timestamp,
-        })
-      );
+      // Check if room is ready
+      if (!room || !room.localParticipant) {
+        console.warn("[Vision] Room not ready, queuing insight for later");
+        pendingInsightRef.current = insight;
+        return false;
+      }
 
-      room.localParticipant.publishData(data, { reliable: true });
+      // Check if connected (unless forcing)
+      if (!forceNow && !isConnectedRef.current) {
+        console.warn("[Vision] Not connected yet, queuing insight");
+        pendingInsightRef.current = insight;
+        return false;
+      }
+
+      const payload = {
+        type: "vision_update",
+        mode: insight.lens,
+        data: insight.data,
+        timestamp: insight.timestamp,
+      };
+
+      try {
+        const data = new TextEncoder().encode(JSON.stringify(payload));
+        room.localParticipant.publishData(data, { reliable: true });
+        console.log("[Vision] ✓ Sent to agent:", insight.lens, "-", insight.data.analysis.slice(0, 60));
+        pendingInsightRef.current = null;
+        return true;
+      } catch (err) {
+        console.error("[Vision] Failed to send:", err);
+        pendingInsightRef.current = insight;
+        return false;
+      }
     },
-    [room]
+    [roomRef]
   );
+
+  // Send pending insight when connection becomes available
+  useEffect(() => {
+    if (isConnected && pendingInsightRef.current) {
+      console.log("[Vision] Connection ready, sending pending insight");
+      sendVisionUpdate(pendingInsightRef.current, true);
+    }
+  }, [isConnected, sendVisionUpdate]);
 
   // Process vision result with deduplication
   const processVisionResult = useCallback(
     (result: StreamInferenceResult) => {
+      console.log("[Vision] Result received:", result.ok ? "OK" : "ERROR");
+
       if (!result.ok || !result.result) {
-        console.error("Vision inference error:", result.error);
+        console.error("[Vision] Inference error:", result.error);
         return;
       }
 
       const visionData = parseVisionResponse(result.result);
-      if (!visionData) return;
+      if (!visionData) {
+        console.warn("[Vision] Failed to parse response");
+        return;
+      }
+
+      console.log("[Vision] Parsed:", visionData.analysis.slice(0, 50));
 
       const now = Date.now();
       const currentLens = currentLensRef.current;
@@ -244,13 +308,18 @@ export function useAuteurVision({ room, enabled }: UseAuteurVisionConfig) {
 
   // Start vision stream
   const startVision = useCallback(async () => {
+    console.log("[Vision] Starting vision stream...");
+
     try {
       const apiUrl = process.env.NEXT_PUBLIC_OVERSHOOT_API_URL;
       const apiKey = process.env.NEXT_PUBLIC_OVERSHOOT_API_KEY;
 
       if (!apiUrl || !apiKey) {
+        console.error("[Vision] Missing API credentials");
         throw new Error("Overshoot API credentials not configured");
       }
+
+      console.log("[Vision] API URL:", apiUrl);
 
       const vision = new RealtimeVision({
         apiUrl,
@@ -272,16 +341,21 @@ export function useAuteurVision({ room, enabled }: UseAuteurVisionConfig) {
 
       await vision.start();
       visionRef.current = vision;
+      console.log("[Vision] ✓ Stream started successfully");
 
       const stream = vision.getMediaStream();
       if (stream) {
         setMediaStream(stream);
+        console.log("[Vision] ✓ Media stream obtained");
+      } else {
+        console.warn("[Vision] No media stream from SDK");
       }
 
       setIsStreaming(true);
       setVisionStatus("idle");
       setError(null);
     } catch (err) {
+      console.error("[Vision] Start failed:", err);
       setError(`Vision start failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
   }, [processVisionResult]);
@@ -320,9 +394,12 @@ export function useAuteurVision({ room, enabled }: UseAuteurVisionConfig) {
 
   // Auto-start/stop based on enabled prop
   useEffect(() => {
+    console.log("[useAuteurVision] Effect: enabled =", enabled, "isStreaming =", isStreaming);
     if (enabled && !isStreaming) {
+      console.log("[useAuteurVision] Calling startVision()");
       startVision();
     } else if (!enabled && isStreaming) {
+      console.log("[useAuteurVision] Calling stopVision()");
       stopVision();
     }
   }, [enabled, isStreaming, startVision, stopVision]);

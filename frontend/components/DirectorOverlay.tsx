@@ -60,11 +60,13 @@ function SubjectHighlight({
   containerWidth,
   containerHeight,
   label,
+  narrativeRole,
 }: {
   coordinates: [number, number, number, number];
   containerWidth: number;
   containerHeight: number;
   label?: string;
+  narrativeRole?: "primary" | "secondary" | "context";
 }) {
   const [x, y, w, h] = coordinates;
 
@@ -74,9 +76,25 @@ function SubjectHighlight({
   const width = w * containerWidth;
   const height = h * containerHeight;
 
+  // Get colors based on narrative role (for story mode)
+  const getColors = () => {
+    switch (narrativeRole) {
+      case "primary":
+        return { border: "border-amber-400", bg: "bg-amber-500/80", shadow: "rgba(251, 191, 36, 0.4)" };
+      case "secondary":
+        return { border: "border-purple-400", bg: "bg-purple-500/80", shadow: "rgba(168, 85, 247, 0.4)" };
+      case "context":
+        return { border: "border-cyan-400", bg: "bg-cyan-500/80", shadow: "rgba(34, 211, 238, 0.4)" };
+      default:
+        return { border: "border-amber-400", bg: "bg-amber-500/80", shadow: "rgba(251, 191, 36, 0.4)" };
+    }
+  };
+
+  const colors = getColors();
+
   return (
     <div
-      className="absolute pointer-events-none"
+      className="absolute pointer-events-none story-box-smooth"
       style={{
         left: `${left}px`,
         top: `${top}px`,
@@ -86,19 +104,19 @@ function SubjectHighlight({
     >
       {/* Main border */}
       <div
-        className="absolute inset-0 border-2 border-amber-400 rounded-sm"
-        style={{ boxShadow: "0 0 12px rgba(251, 191, 36, 0.4)" }}
+        className={`absolute inset-0 border-2 ${colors.border} rounded-sm`}
+        style={{ boxShadow: `0 0 12px ${colors.shadow}` }}
       />
 
       {/* Corner brackets */}
-      <div className="absolute -top-0.5 -left-0.5 w-4 h-4 border-t-2 border-l-2 border-amber-400" />
-      <div className="absolute -top-0.5 -right-0.5 w-4 h-4 border-t-2 border-r-2 border-amber-400" />
-      <div className="absolute -bottom-0.5 -left-0.5 w-4 h-4 border-b-2 border-l-2 border-amber-400" />
-      <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 border-b-2 border-r-2 border-amber-400" />
+      <div className={`absolute -top-0.5 -left-0.5 w-4 h-4 border-t-2 border-l-2 ${colors.border}`} />
+      <div className={`absolute -top-0.5 -right-0.5 w-4 h-4 border-t-2 border-r-2 ${colors.border}`} />
+      <div className={`absolute -bottom-0.5 -left-0.5 w-4 h-4 border-b-2 border-l-2 ${colors.border}`} />
+      <div className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 border-b-2 border-r-2 ${colors.border}`} />
 
       {/* Label */}
       {label && (
-        <div className="absolute -top-6 left-0 px-2 py-0.5 bg-amber-500/80 text-black text-[10px] font-bold uppercase tracking-wider rounded">
+        <div className={`absolute -top-6 left-0 px-2 py-0.5 ${colors.bg} text-black text-[10px] font-bold uppercase tracking-wider rounded story-label-reveal`}>
           {label}
         </div>
       )}
@@ -213,6 +231,20 @@ export function DirectorOverlay({
               containerWidth={containerWidth}
               containerHeight={containerHeight}
               label="Subject"
+            />
+          );
+        }
+
+        // Story subject highlight box (for story mode)
+        if (overlay.type === "story_subject" && overlay.coordinates) {
+          return (
+            <SubjectHighlight
+              key={`story-${index}`}
+              coordinates={overlay.coordinates}
+              containerWidth={containerWidth}
+              containerHeight={containerHeight}
+              label={overlay.label}
+              narrativeRole={overlay.narrative_role}
             />
           );
         }
